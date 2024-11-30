@@ -208,6 +208,67 @@ def compute_data_association(ekf_state, measurements, sigmas, params):
 
     return assoc
 
+
+def landmark_management(trees, assoc, ekf_state):
+    # Landmark uncertainty
+    # Spatial Distribution
+    # Proximity to robot
+    # Data association
+    num_landmarks = ekf_state['num_landmarks']
+    P = ekf_state['P']
+    landmark_utility = np.zeros(num_landmarks)
+    if num_landmarks > 0:
+        landmarks = ekf_state['x'][3:].reshape(-1, 2)
+        robot_state = ekf_state['x'][:3]
+
+        # Spatial Distribution
+        pairwise_distances = np.linalg.norm(
+            landmarks[:, np.newaxis, :] - landmarks[np.newaxis, :, :], axis=2
+        )
+        avg_distances = []
+        for i in range(num_landmarks):
+            avg_distances.append(np.mean(pairwise_distances[i, np.arange(num_landmarks) != i]))
+        landmark_utility = avg_distances / np.max(avg_distances)
+
+        # Proximity to robot
+        robot_landmark_distances = np.linalg.norm(landmarks - robot_state[:2], axis=1)  # Euclidean distance
+        proximity_utility = robot_landmark_distances / np.max(robot_landmark_distances)
+        landmark_utility += (1 - proximity_utility)
+
+        # Landmark uncertainty
+        landmark_covariances = []
+        for i in range(num_landmarks):
+            start_idx = 3 + 2 * i
+            cov_block = P[start_idx:start_idx + 2, start_idx:start_idx + 2]  # 2x2 block for each landmark
+            landmark_covariances.append(np.trace(cov_block))  # Use trace as a scalar measure of uncertainty
+
+        # Normalize covariance and invert to make lower covariance -> higher utility
+        landmark_covariances = np.array(landmark_covariances)
+        normalized_covariances = landmark_covariances / np.max(landmark_covariances)
+        covariance_utility = 1 - normalized_covariances  # Higher utility for lower covariance
+        landmark_utility += covariance_utility
+
+        # Remove landmarks with low utility, maybe set a max amount as well
+        threshold = np.percentile(landmark_utility, 15)
+        top_90_indices = [i for i, util in enumerate(landmark_utility) if util >= threshold]
+
+        filtered_landmarks = landmarks[top_90_indices]
+        ekf_state['x'] = np.hstack((robot_state, filtered_landmarks.flatten()))
+        ekf_state['num_landmarks'] = len(top_90_indices)
+
+        selected_indices = []
+        for idx in top_90_indices:
+            selected_indices.append(3 + 2 * idx)     # lx index
+            selected_indices.append(3 + 2 * idx + 1)  # ly index
+        selected_indices = np.array(selected_indices, dtype=int)
+
+        filtered_P = P[np.ix_(np.r_[0:3, selected_indices], np.r_[0:3, selected_indices])]
+    
+        # Update ekf_state['P'] and return
+        ekf_state['P'] = filtered_P
+    return ekf_state
+    
+
 def laser_update(trees, assoc, ekf_state, sigmas, params):
     '''
     Perform a measurement update of the EKF state given a set of tree measurements.
@@ -236,6 +297,7 @@ def laser_update(trees, assoc, ekf_state, sigmas, params):
             j = len(ekf_state['x'])//2 - 2
         elif j == -2:
             continue
+
         dim = ekf_state['x'].shape[0]
         z_hat, H = laser_measurement_model(ekf_state, j)
 
@@ -297,9 +359,10 @@ def run_ekf_slam(events, ekf_state_0, vehicle_params, filter_params, sigmas):
             scan = event[1][1:]
             #print('scan',scan.shape)
             trees = tree_extraction.extract_trees(scan, filter_params)
-            #print('trees',trees[0])
+            # print('trees',trees[0])
             assoc = compute_data_association(ekf_state, trees, sigmas, filter_params)
             ekf_state = laser_update(trees, assoc, ekf_state, sigmas, filter_params)
+            ekf_state = landmark_management(trees, assoc, ekf_state)
             if filter_params["do_plot"]:
                 slam_utils.do_plot(state_history['x'], ekf_state, trees, scan, assoc, plot, filter_params)
 
@@ -332,7 +395,7 @@ def main():
 
     filter_params = {
         # measurement params
-        "max_laser_range": 75, # meters
+        "max_laser_range": 200, # meters
 
         # general...
         "do_plot": True,
