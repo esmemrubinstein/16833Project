@@ -1,7 +1,7 @@
 import numpy as np
 
 
-unmanaged_pose = ''
+unmanaged_pose = 'results/pose_no_management.txt'
 managed_pose = ''
 
 unmanaged_pose = np.loadtxt(unmanaged_pose)
