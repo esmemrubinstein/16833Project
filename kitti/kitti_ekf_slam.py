@@ -1,6 +1,5 @@
 from __future__ import division
 import sys
-sys.path.append("/home/ethan/coursework/16833/16833Project/code")
 
 import numpy as np
 import slam_utils
